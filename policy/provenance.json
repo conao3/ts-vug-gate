@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "nixpkgs_commit": "643809054d65fdd466a63e3155b8c498cb483c04",
+  "new_package_sources": {
+    "unibilium": ["https://github.com/neovim/unibilium/archive/"]
+  },
+  "approved_sources": {},
+  "redirect_sources": {
+    "unibilium": ["https://codeload.github.com/neovim/unibilium/"]
+  },
+  "patch_origins": {}
+}

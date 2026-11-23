@@ -1,0 +1,117 @@
+name: Merge policy
+run-name: Merge policy ${{ fromJSON(inputs.candidate).id || 'smoke' }}
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Candidate identity JSON
+        type: string
+        required: true
+permissions:
+  contents: read
+env:
+  CANDIDATE: ${{ inputs.candidate }}
+  VUG: github:conao3/rust-vug/93ed787e82ff24369f1d8352889ef8fedbb90b29
+jobs:
+  inspect:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 35
+    outputs:
+      changed: ${{ steps.inspect.outputs.changed }}
+      targets: ${{ steps.inspect.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v32.0.0
+      - run: nix build "$VUG" -o "$RUNNER_TEMP/vug"
+      - id: inspect
+        run: python3 scripts/inspect.py inspect
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: inspection
+          path: ${{ runner.temp }}/inspection.json
+  primary:
+    needs: inspect
+    if: needs.inspect.outputs.targets != '[]'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    outputs:
+      ids: ${{ steps.build.outputs.ids }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v32.0.0
+      - run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          nix build "$VUG" -o "$RUNNER_TEMP/vug"
+      - id: build
+        env:
+          PACKAGES: ${{ needs.inspect.outputs.targets }}
+        run: python3 scripts/inspect.py build
+  repeat:
+    needs: inspect
+    if: needs.inspect.outputs.targets != '[]'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    outputs:
+      ids: ${{ steps.build.outputs.ids }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v32.0.0
+      - run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          nix build "$VUG" -o "$RUNNER_TEMP/vug"
+      - id: build
+        env:
+          PACKAGES: ${{ needs.inspect.outputs.changed }}
+        run: python3 scripts/inspect.py build
+  decide:
+    needs: [inspect, primary, repeat]
+    if: ${{ !cancelled() && needs.inspect.result == 'success' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v32.0.0
+      - run: nix build "$VUG" -o "$RUNNER_TEMP/vug"
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: inspection
+          path: ${{ runner.temp }}
+      - id: decide
+        env:
+          TARGETS: ${{ needs.inspect.outputs.targets }}
+          CHANGED: ${{ needs.inspect.outputs.changed }}
+          PRIMARY: ${{ needs.primary.result == 'success' && needs.primary.outputs.ids || '{}' }}
+          REPEAT: ${{ needs.repeat.result == 'success' && needs.repeat.outputs.ids || '{}' }}
+        run: python3 scripts/inspect.py report
+  callback:
+    needs: [decide]
+    if: ${{ !cancelled() && fromJSON(inputs.candidate).id != null }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    steps:
+      - env:
+          RESULT_URL: ${{ vars.VUG_RESULT_URL }}
+          DECISION: ${{ needs.decide.result == 'success' && needs.decide.outputs.decision || '"incomplete"' }}
+        run: |
+          set -euo pipefail
+          token=$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=vug-gate-result" | jq -er .value)
+          printf '::add-mask::%s\n' "$token"
+          jq -cn --argjson candidate "$CANDIDATE" --argjson decision "$DECISION" \
+            '{candidate: $candidate, decision: $decision}' |
+            curl --fail --silent --show-error --retry 4 \
+              --header "Authorization: Bearer $token" \
+              --header 'Content-Type: application/json' --data-binary @- "$RESULT_URL"
