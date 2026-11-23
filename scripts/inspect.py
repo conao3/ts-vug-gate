@@ -136,9 +136,13 @@ def inspect(request):
     code = subprocess.run([VUG, "record", "check-tree", "--root", TEMP / "candidate"],
                           stdout=subprocess.PIPE).returncode
     result = "passed" if code == 0 else "failed"
-    data["results"] = [record(1, target, identity, result) for target in changed + (
-        ["."] if outside or not changed else []
-    )]
+    format_targets = changed + (["."] if outside or not changed else [])
+    data["required_checks"] = [
+        dict(check=check, target=target)
+        for target in changed
+        for check in (3, 4, 5, 6, 7, 8)
+    ] + [dict(check=1, target=target) for target in format_targets]
+    data["results"] = [record(1, target, identity, result) for target in format_targets]
     provenance = vug("verify-provenance", "--root", OBJECTS, "--policy",
                      f"file://{POLICY.resolve()}", request=dict(schema_version=1, identity=identity),
                      path=TEMP / "provenance-input.json")
