@@ -187,10 +187,14 @@ def build(request, targets):
             if file.stem != version and (not original.is_file() or file.read_bytes() != original.read_bytes()):
                 raise ValueError("A changed version is outside the selected build plan")
         with log.open("wb") as stderr:
-            command(VUG, "package", "build-package", "--root", root, "--name", name,
-                    "--package-version", version, "--jobs", "4", "--data-dir", data,
-                    "--cache-dir", data.parent / "sources",
-                    stdout=subprocess.DEVNULL, stderr=stderr)
+            result = subprocess.run(
+                [VUG, "package", "build-package", "--root", root, "--name", name,
+                 "--package-version", version, "--jobs", "4", "--data-dir", data,
+                 "--cache-dir", data.parent / "sources"],
+                stdout=subprocess.DEVNULL, stderr=stderr,
+            )
+        if result.returncode:
+            raise ValueError(f"Package build exited with status {result.returncode}")
         manifest = data / "index-outputs" / name / version
         if manifest.is_file():
             return {key: row["id"] for key, row in json.loads(manifest.read_text())["outputs"].items()}
