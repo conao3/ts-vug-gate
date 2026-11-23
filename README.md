@@ -29,7 +29,7 @@ The workflow fetches Git objects into a bare repository. The inspection script r
 
 The inspection job runs `vug record check-tree`, `vug record verify-provenance`, and the scope decision. On an eligible candidate, separate GitHub-hosted jobs build and test changed packages and their reverse dependencies, and rebuild the changed packages in an independent store. The jobs require enabled tests with an empty skip list and read output IDs from the vug store index. The decision job calls `vug record decide-merge` with the inspection and build results. Only the callback job can request OIDC.
 
-The provenance file contains the initial allowlist for the unibilium smoke run. Expand it with reviewed source and patch origins before enabling additional packages. A plan over 12 packages or a changed historical version yields an incomplete check. The builders use the pinned seed and vug's network-isolated build and test sandbox. vug fetches sources for each build outside that sandbox. The transfer of the provenance job's verified source files to the builders is a separate rollout step.
+The provenance file contains the initial allowlist for the which and unibilium smoke runs. Expand it with reviewed source and patch origins before enabling additional packages. A plan over 12 packages or a changed historical version yields an incomplete check. The builders use the pinned seed and vug's network-isolated build and test sandbox. vug fetches sources for each build outside that sandbox. The transfer of the provenance job's verified source files to the builders is a separate rollout step.
 
 To run a smoke check, substitute an already-merged package commit and its parent. This mode produces the decision in the run logs and skips the callback.
 

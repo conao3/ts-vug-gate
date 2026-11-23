@@ -2,7 +2,8 @@
   "schema_version": 1,
   "nixpkgs_commit": "643809054d65fdd466a63e3155b8c498cb483c04",
   "new_package_sources": {
-    "unibilium": ["https://github.com/neovim/unibilium/archive/"]
+    "unibilium": ["https://github.com/neovim/unibilium/archive/"],
+    "which": ["https://ftp.gnu.org/gnu/which/"]
   },
   "approved_sources": {},
   "redirect_sources": {
