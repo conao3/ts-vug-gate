@@ -301,7 +301,7 @@ it("only squashes a matching candidate with the inspection App's successful chec
     GITHUB_APP_ID: "11",
     MERGE_APP_ID: "22",
     MERGE_APP_PRIVATE_KEY: config.GITHUB_APP_PRIVATE_KEY,
-    MERGE_INSTALLATION: JSON.stringify({ repo_id: 99, installation_id: 20 }),
+    MERGE_INSTALLATION: JSON.stringify({ repo_id: 99, installation_id: 20, branch: "master" }),
   })
   const inspection = { repo: "example/packages", repo_id: 99, installation_id: 10 }
   const merger = github.mergeTarget(inspection)!
@@ -354,4 +354,32 @@ it("only squashes a matching candidate with the inspection App's successful chec
   snapshots.set(9, { author: 100, head: sha("9") })
   expect(await github.squash(inspection, merger, candidate, 123)).toBe(true)
   expect(merges).toBe(1)
+  expect(await github.squash(inspection, { ...merger, branch: "other" }, candidate, 123)).toBe(
+    false,
+  )
+  expect(merges).toBe(1)
+
+  const review = {
+    id: 1,
+    state: "APPROVED",
+    commit_id: sha("8"),
+    user: { id: 101, login: "maintainer" },
+  }
+  const reviews = [review]
+  let permission = "admin"
+  network.use(
+    http.get(`${repo}/pulls/9/reviews`, () => HttpResponse.json(reviews)),
+    http.get(`${repo}/collaborators/maintainer/permission`, () =>
+      HttpResponse.json({ permission, user: { id: 101 } }),
+    ),
+  )
+  expect(await github.approved(merger, candidate, 100)).toBe(false)
+  review.commit_id = sha("9")
+  expect(await github.approved(merger, candidate, 101)).toBe(false)
+  permission = "write"
+  expect(await github.approved(merger, candidate, 100)).toBe(false)
+  permission = "admin"
+  expect(await github.approved(merger, candidate, 100)).toBe(true)
+  reviews.push({ ...review, id: 2, state: "DISMISSED" })
+  expect(await github.approved(merger, candidate, 100)).toBe(false)
 })

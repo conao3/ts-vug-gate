@@ -113,7 +113,7 @@ export class GitHub {
     const { sha: head_sha } = pull.head
     const policy_digest = digest.parse(this.env.POLICY_DIGEST)
     if (pull.state !== "open" || pull.draft || pull.base.ref !== repository.default_branch) {
-      return { author: pull.user.id, head: head_sha, candidate: null }
+      return { author: pull.user.id, head: head_sha, branch: pull.base.ref, candidate: null }
     }
     const ref = repository.default_branch.split("/").map(encodeURIComponent).join("/")
     const [base, head] = await Promise.all([
@@ -134,20 +134,20 @@ export class GitHub {
       tree_oid: head.tree.sha,
       policy_digest,
     }
-    return { author: pull.user.id, head: head_sha, candidate }
+    return { author: pull.user.id, head: head_sha, branch: pull.base.ref, candidate }
   }
 
   mergeTarget(target: Target) {
     if (!this.env.MERGE_INSTALLATION) return null
     const config = z
-      .object({ repo_id: id, installation_id: id })
+      .object({ repo_id: id, installation_id: id, branch: z.string().min(1) })
       .strict()
       .parse(JSON.parse(this.env.MERGE_INSTALLATION))
     if (config.repo_id !== target.repo_id) return null
     if (this.env.MERGE_APP_ID === this.env.GITHUB_APP_ID) {
       throw new Error("The inspection and merge Apps must have different identities")
     }
-    return { ...target, installation_id: config.installation_id }
+    return { ...target, installation_id: config.installation_id, branch: config.branch }
   }
 
   async approved(target: Target, candidate: Candidate, author: number) {
@@ -197,7 +197,12 @@ export class GitHub {
     return false
   }
 
-  async squash(inspection: Target, target: Target, candidate: Candidate, checkId: number) {
+  async squash(
+    inspection: Target,
+    target: Target & { branch: string },
+    candidate: Candidate,
+    checkId: number,
+  ) {
     const root = `/repos/${target.repo}`
     const token = await this.installation(target, true)
     const run = z
@@ -232,7 +237,12 @@ export class GitHub {
       )
     if (comparison.status !== "ahead") return false
     const latest = await this.snapshot(inspection, candidate.pr)
-    if (!latest.candidate || !sameCandidate(candidate, latest.candidate)) return false
+    if (
+      latest.branch !== target.branch ||
+      !latest.candidate ||
+      !sameCandidate(candidate, latest.candidate)
+    )
+      return false
     const result = z.object({ merged: z.literal(true), sha: oid }).parse(
       await this.request(`${root}/pulls/${candidate.pr}/merge`, token, "PUT", {
         sha: candidate.head_sha,

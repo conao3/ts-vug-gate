@@ -429,14 +429,17 @@ export class MergeQueue extends DurableObject<Env> {
         notice.phase === "done" &&
         candidate &&
         (notice.outcome === "auto_merge" || (target && notice.outcome === "requires_approval"))
+      let mergeBranchMatches = false
       if (eligible) {
         const latest = await this.github.snapshot(notice.target, notice.pr)
+        mergeBranchMatches = latest.branch === target?.branch
         if (!sameSnapshot(notice, latest)) {
           this.replace(notice.target, notice.pr, latest)
           return TICK
         }
       }
-      const needsApproval = target && eligible && notice.outcome === "requires_approval"
+      const needsApproval =
+        target && eligible && mergeBranchMatches && notice.outcome === "requires_approval"
       const approved = Boolean(
         needsApproval &&
         candidate &&
@@ -453,7 +456,9 @@ export class MergeQueue extends DurableObject<Env> {
         ...notice,
         checkId,
         dirty: false,
-        mergePending: Boolean(target && eligible && (!needsApproval || approved)),
+        mergePending: Boolean(
+          target && eligible && mergeBranchMatches && (!needsApproval || approved),
+        ),
         approvalPoll: needsApproval && !approved ? Date.now() + APPROVAL_POLL : undefined,
       })
       return TICK
