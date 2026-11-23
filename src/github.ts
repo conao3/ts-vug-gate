@@ -159,10 +159,12 @@ export class GitHub {
         : {}),
       output: { title: check, summary: notice.summary },
     }
-    if (knownId === undefined) {
+    if (knownId === undefined || notice.status !== "completed") {
       const runs = z
         .object({
-          check_runs: z.array(z.object({ id, external_id: z.string().nullable() })),
+          check_runs: z.array(
+            z.object({ id, external_id: z.string().nullable(), status: z.string() }),
+          ),
         })
         .parse(
           await this.request(
@@ -170,7 +172,13 @@ export class GitHub {
             token,
           ),
         )
-      knownId = runs.check_runs.find((run) => run.external_id === external_id)?.id
+      knownId = runs.check_runs
+        .filter(
+          (run) =>
+            run.external_id === external_id &&
+            (notice.status === "completed" || run.status !== "completed"),
+        )
+        .reduce<number | undefined>((latest, run) => Math.max(latest ?? 0, run.id), undefined)
     }
     if (knownId === undefined) {
       return z

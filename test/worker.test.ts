@@ -33,9 +33,11 @@ const snapshots = new Map([
   [3, { author: 100, head: sha("3") }],
   [4, { author: 101, head: sha("4") }],
 ])
+const closed = new Set<number>()
 const checks: {
   id: number
   head_sha?: string
+  external_id: string
   status: string
   conclusion?: string
   output: { summary: string }
@@ -43,6 +45,7 @@ const checks: {
 const jobs: { candidate: Dispatch; status: string; conclusion: string | null }[] = []
 const checkBody = z.object({
   head_sha: z.string().optional(),
+  external_id: z.string(),
   status: z.string(),
   conclusion: z.string().optional(),
   output: z.object({ summary: z.string() }),
@@ -72,7 +75,7 @@ beforeAll(() => {
       if (!row) return new HttpResponse(null, { status: 404 })
       return HttpResponse.json({
         number: Number(params.pr),
-        state: "open",
+        state: closed.has(Number(params.pr)) ? "closed" : "open",
         draft: false,
         user: { id: row.author },
         base: { ref: "master", repo: { id: 99 } },
@@ -85,7 +88,12 @@ beforeAll(() => {
     http.get(`${repo}/git/commits/:head`, ({ params }) =>
       HttpResponse.json({ sha: params.head, tree: { sha: sha("b") } }),
     ),
-    http.get(`${repo}/commits/:head/check-runs`, () => HttpResponse.json({ check_runs: [] })),
+    http.get(`${repo}/commits/:head/check-runs`, ({ params }) => {
+      const latest = new Map(checks.map((entry) => [entry.id, entry]))
+      return HttpResponse.json({
+        check_runs: [...latest.values()].filter((entry) => entry.head_sha === params.head),
+      })
+    }),
     http.post(`${repo}/check-runs`, async ({ request }) => {
       const body = checkBody.parse(await request.json())
       const id = checks.length + 50
@@ -266,4 +274,17 @@ it("authenticates intake and results and preserves slots across replay, cancella
     checks.filter((check) => check.conclusion === "success").map((check) => check.head_sha),
   ).toEqual([sha("5")])
   expect((await result(current.candidate, 2)).status).toBe(409)
+
+  const completed = checks.findLast((check) => check.head_sha === sha("5"))
+  for (const pr of [1, 2, 3]) {
+    closed.add(pr)
+    expect((await event(pr)).status).toBe(202)
+  }
+  await alarms(4)
+  closed.delete(1)
+  expect((await event(1)).status).toBe(202)
+  await alarms(2)
+  const reopened = checks.findLast((check) => check.head_sha === sha("5"))
+  expect(reopened?.id).not.toBe(completed?.id)
+  expect(reopened?.status).toBe("queued")
 }, 30_000)
