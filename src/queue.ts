@@ -146,7 +146,9 @@ export class MergeQueue extends DurableObject<Env> {
       ).length
       const changedHead = prior?.head !== next.head
       const superseded =
-        changedHead && prior?.checkId && prior.outcome === "auto_merge"
+        changedHead &&
+        prior?.checkId &&
+        (prior.phase === "waiting" || prior.phase === "running" || prior.outcome === "auto_merge")
           ? { head: prior.head, checkId: prior.checkId }
           : prior?.superseded
       const phase = prior?.active

@@ -252,7 +252,12 @@ it("authenticates intake and results and preserves slots across replay, cancella
   snapshots.set(1, { author: 100, head: sha("5") })
   expect((await event(1)).status).toBe(202)
   expect((await result(old.candidate, 1)).status).toBe(409)
-  await alarms(2)
+  await alarms(3)
+  expect(checks.findLast((check) => check.head_sha === sha("1"))).toMatchObject({
+    status: "completed",
+    conclusion: "failure",
+    output: { summary: "A newer candidate replaced this result." },
+  })
   expect(old.conclusion).toBe("cancelled")
   expect(jobs).toHaveLength(1)
   await runInDurableObject(stub(), (_instance, state) => {
