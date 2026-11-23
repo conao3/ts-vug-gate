@@ -190,7 +190,7 @@ def build(request, targets):
         manifest = data / "index-outputs" / name / version
         if manifest.is_file():
             return {key: row["id"] for key, row in json.loads(manifest.read_text())["outputs"].items()}
-        return {"out": (data / "index" / name / version).read_text().strip()}
+        return {"out": (data / "index" / name / version).read_text().split()[1]}
 
     namespace["build_package"] = build_and_read
     os.environ["PACKAGES"] = json.dumps(targets)
