@@ -1,0 +1,12 @@
+{
+  "name": "vug merge",
+  "url": "https://github.com/conao3/ts-vug-gate",
+  "hook_attributes": { "active": false },
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "read",
+    "checks": "read"
+  },
+  "default_events": []
+}
