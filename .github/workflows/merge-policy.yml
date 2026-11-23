@@ -103,7 +103,7 @@ jobs:
       id-token: write
     steps:
       - env:
-          RESULT_URL: ${{ vars.VUG_RESULT_URL }}
+          RESULT_URL: ${{ secrets.VUG_RESULT_URL }}
           DECISION: ${{ needs.decide.result == 'success' && needs.decide.outputs.decision || '"incomplete"' }}
         run: |
           set -euo pipefail

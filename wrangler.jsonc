@@ -1,0 +1,15 @@
+{
+  "name": "vug-gate",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "QUEUE", "class_name": "MergeQueue" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MergeQueue"] }],
+  "vars": {
+    "RUNNING_PER_AUTHOR": "1",
+    "WAITING_PER_AUTHOR": "1",
+    "RUNNING_TOTAL": "1",
+  },
+}

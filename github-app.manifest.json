@@ -1,0 +1,12 @@
+{
+  "name": "vug merge policy",
+  "url": "<APP_HOME_URL>",
+  "hook_attributes": { "url": "<WEBHOOK_URL>", "active": true },
+  "public": false,
+  "default_permissions": {
+    "contents": "read",
+    "pull_requests": "read",
+    "checks": "write"
+  },
+  "default_events": ["pull_request", "push"]
+}

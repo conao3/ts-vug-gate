@@ -1,0 +1,8 @@
+/.dev.vars*
+/.env*
+/.wrangler/
+/dist/
+/node_modules/
+/result/
+/.vite-hooks/
+__pycache__/
