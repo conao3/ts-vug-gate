@@ -77,6 +77,7 @@ beforeAll(() => {
         number: Number(params.pr),
         state: closed.has(Number(params.pr)) ? "closed" : "open",
         draft: false,
+        merged: false,
         user: { id: row.author },
         base: { ref: "master", repo: { id: 99 } },
         head: { sha: row.head },

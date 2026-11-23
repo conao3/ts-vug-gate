@@ -12,6 +12,7 @@ const pullSchema = z.object({
   user: z.object({ id }),
   state: z.enum(["open", "closed"]),
   draft: z.boolean(),
+  merged: z.boolean(),
   base: z.object({ ref: z.string(), repo: z.object({ id }) }),
   head: z.object({ sha: oid }),
 })
@@ -111,9 +112,15 @@ export class GitHub {
       throw new Error("GitHub repository or pull request identity mismatch")
     }
     const { sha: head_sha } = pull.head
+    const state = {
+      author: pull.user.id,
+      head: head_sha,
+      branch: pull.base.ref,
+      merged: pull.merged,
+    }
     const policy_digest = digest.parse(this.env.POLICY_DIGEST)
     if (pull.state !== "open" || pull.draft || pull.base.ref !== repository.default_branch) {
-      return { author: pull.user.id, head: head_sha, branch: pull.base.ref, candidate: null }
+      return { ...state, candidate: null }
     }
     const ref = repository.default_branch.split("/").map(encodeURIComponent).join("/")
     const [base, head] = await Promise.all([
@@ -134,7 +141,7 @@ export class GitHub {
       tree_oid: head.tree.sha,
       policy_digest,
     }
-    return { author: pull.user.id, head: head_sha, branch: pull.base.ref, candidate }
+    return { ...state, candidate }
   }
 
   mergeTarget(target: Target) {

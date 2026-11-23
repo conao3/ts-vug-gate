@@ -173,7 +173,7 @@ export class MergeQueue extends DurableObject<Env> {
         head: next.head,
         candidate: next.candidate,
         phase,
-        dirty: true,
+        dirty: !next.merged,
         queued: prior?.queued ?? Date.now(),
         active: prior?.active ? { ...prior.active, poll: 0 } : undefined,
         checkId: changedHead ? undefined : prior?.checkId,
@@ -385,7 +385,7 @@ export class MergeQueue extends DurableObject<Env> {
       phase: entry.candidate ? "done" : "inactive",
       active: undefined,
       outcome,
-      dirty: true,
+      dirty: entry.dirty || entry.candidate !== null,
     })
   }
 
