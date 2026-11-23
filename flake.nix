@@ -36,6 +36,14 @@
             '';
           };
           src = pkgs.lib.cleanSource ./.;
+          runWorker = pkgs.writeShellScript "run-vug-gate" ''
+            session_dir=$(mktemp -d)
+            trap 'rm -rf -- "$session_dir"' EXIT
+            cp @installation@/wrangler.jsonc "$session_dir/"
+            ln -s @installation@/dist "$session_dir/dist"
+            ${node}/bin/node @installation@/node_modules/wrangler/bin/wrangler.js dev \
+              --config "$session_dir/wrangler.jsonc" --no-bundle "$@"
+          '';
         in
         {
           treefmt = {
@@ -64,7 +72,6 @@
               node
               pnpm
               pkgs.pnpmConfigHook
-              pkgs.makeWrapper
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.autoPatchelfHook
@@ -84,8 +91,9 @@
               cp -R dist node_modules "$out/lib/vug-gate/"
               substitute wrangler.jsonc "$out/lib/vug-gate/wrangler.jsonc" \
                 --replace-fail '"src/index.ts"' '"dist/index.js"'
-              makeWrapper ${node}/bin/node "$out/bin/vug-gate" \
-                --add-flags "$out/lib/vug-gate/node_modules/wrangler/bin/wrangler.js dev --config $out/lib/vug-gate/wrangler.jsonc"
+              substitute ${runWorker} "$out/bin/vug-gate" \
+                --replace-fail '@installation@' "$out/lib/vug-gate"
+              chmod +x "$out/bin/vug-gate"
               runHook postInstall
             '';
             meta.mainProgram = "vug-gate";
