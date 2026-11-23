@@ -218,9 +218,7 @@ def report():
     verdict = decide(data)
     print(f"Decision · {verdict['Decision']}")
     emit(decision=verdict["Decision"])
-    if not json.loads(os.environ["CANDIDATE"]).get("id") and any(
-        r["status"] != "passed" for r in data["results"]
-    ):
+    if not json.loads(os.environ["CANDIDATE"]).get("id") and verdict["Decision"] != "auto_merge":
         sys.exit(1)
 
 

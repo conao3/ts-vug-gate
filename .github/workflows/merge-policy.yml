@@ -70,6 +70,7 @@ jobs:
           PACKAGES: ${{ needs.inspect.outputs.changed }}
         run: python3 scripts/inspect.py build
   decide:
+    name: Decide merge policy
     needs: [inspect, primary, repeat]
     if: ${{ !cancelled() && needs.inspect.result == 'success' }}
     runs-on: ubuntu-26.04
