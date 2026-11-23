@@ -35,6 +35,8 @@ const entrySchema = z.object({
   checkId: id.optional(),
   superseded: z.object({ head: oid, checkId: id }).optional(),
   outcome: decisionSchema.optional(),
+  mergePending: z.boolean().optional(),
+  approvalPoll: z.number().optional(),
 })
 type Active = z.infer<typeof activeSchema>
 type Entry = z.infer<typeof entrySchema>
@@ -43,8 +45,9 @@ const intakeSchema = z.object({ repo: id, pr: id.optional() })
 const completionSchema = z.object({ run: id, report: reportSchema })
 const TICK = 1_000
 const POLL = 60_000
+const APPROVAL_POLL = 5 * POLL
 
-function checkNotice(entry: Entry) {
+function checkNotice(entry: Entry, approved = false) {
   switch (entry.phase) {
     case "waiting":
       return { status: "queued", summary: "Waiting for a build slot." } as const
@@ -63,12 +66,14 @@ function checkNotice(entry: Entry) {
     case "done":
       return {
         status: "completed",
-        success: entry.outcome === "auto_merge",
+        success: entry.outcome === "auto_merge" || approved,
         summary: {
           auto_merge: "All required checks passed.",
           incomplete: "One or more required checks did not complete.",
           reject: "The candidate failed the merge policy.",
-          requires_approval: "The candidate requires maintainer approval.",
+          requires_approval: approved
+            ? "A repository administrator approved the inspected candidate."
+            : "The candidate requires maintainer approval.",
         }[entry.outcome ?? "incomplete"],
       } as const
     default:
@@ -148,7 +153,10 @@ export class MergeQueue extends DurableObject<Env> {
       const superseded =
         changedHead &&
         prior?.checkId &&
-        (prior.phase === "waiting" || prior.phase === "running" || prior.outcome === "auto_merge")
+        (prior.phase === "waiting" ||
+          prior.phase === "running" ||
+          prior.outcome === "auto_merge" ||
+          prior.outcome === "requires_approval")
           ? { head: prior.head, checkId: prior.checkId }
           : prior?.superseded
       const phase = prior?.active
@@ -415,21 +423,65 @@ export class MergeQueue extends DurableObject<Env> {
     }
     const notice = entries.find((entry) => entry.dirty)
     if (notice) {
-      if (notice.outcome === "auto_merge") {
+      const target = this.github.mergeTarget(notice.target)
+      const candidate = notice.candidate
+      const eligible =
+        notice.phase === "done" &&
+        candidate &&
+        (notice.outcome === "auto_merge" || (target && notice.outcome === "requires_approval"))
+      if (eligible) {
         const latest = await this.github.snapshot(notice.target, notice.pr)
         if (!sameSnapshot(notice, latest)) {
           this.replace(notice.target, notice.pr, latest)
           return TICK
         }
       }
+      const needsApproval = target && eligible && notice.outcome === "requires_approval"
+      const approved = Boolean(
+        needsApproval &&
+        candidate &&
+        (await this.github.approved(target, candidate, notice.author)),
+      )
       const checkId = await this.github.check(
         notice.target,
         notice.pr,
         notice.head,
-        checkNotice(notice),
+        checkNotice(notice, approved),
         notice.checkId,
       )
-      this.save({ ...notice, checkId, dirty: false })
+      this.save({
+        ...notice,
+        checkId,
+        dirty: false,
+        mergePending: Boolean(target && eligible && (!needsApproval || approved)),
+        approvalPoll: needsApproval && !approved ? Date.now() + APPROVAL_POLL : undefined,
+      })
+      return TICK
+    }
+    const pending = entries.find((entry) => entry.mergePending)
+    if (pending?.candidate && pending.checkId) {
+      const target = this.github.mergeTarget(pending.target)
+      if (target) {
+        if (
+          pending.outcome === "requires_approval" &&
+          !(await this.github.approved(target, pending.candidate, pending.author))
+        ) {
+          this.save({ ...pending, dirty: true, mergePending: false })
+          return TICK
+        }
+        try {
+          await this.github.squash(pending.target, target, pending.candidate, pending.checkId)
+        } catch (error) {
+          if (!(error instanceof GithubError) || ![405, 409, 422].includes(error.status))
+            throw error
+        }
+      }
+      this.save({ ...pending, mergePending: false })
+      return TICK
+    }
+    const approval = entries.find((entry) => entry.approvalPoll && entry.approvalPoll <= Date.now())
+    if (approval) {
+      this.save({ ...approval, dirty: true, approvalPoll: undefined })
       return TICK
     }
     const ready = entries.find((entry) => entry.active && entry.active.poll <= Date.now())
@@ -438,7 +490,9 @@ export class MergeQueue extends DurableObject<Env> {
       return TICK
     }
     if (this.ctx.storage.transactionSync(() => this.promote(entries))) return TICK
-    const polls = entries.flatMap((entry) => (entry.active ? [entry.active.poll] : []))
+    const polls = entries.flatMap((entry) =>
+      [entry.active?.poll, entry.approvalPoll].filter((time) => time !== undefined),
+    )
     return polls.length ? Math.min(...polls) - Date.now() : null
   }
 

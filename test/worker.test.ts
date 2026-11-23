@@ -293,3 +293,65 @@ it("authenticates intake and results and preserves slots across replay, cancella
   expect(reopened?.id).not.toBe(completed?.id)
   expect(reopened?.status).toBe("queued")
 }, 30_000)
+
+it("only squashes a matching candidate with the inspection App's successful check", async () => {
+  const { GitHub } = await import("../src/github.ts")
+  const github = new GitHub({
+    ...config,
+    GITHUB_APP_ID: "11",
+    MERGE_APP_ID: "22",
+    MERGE_APP_PRIVATE_KEY: config.GITHUB_APP_PRIVATE_KEY,
+    MERGE_INSTALLATION: JSON.stringify({ repo_id: 99, installation_id: 20 }),
+  })
+  const inspection = { repo: "example/packages", repo_id: 99, installation_id: 10 }
+  const merger = github.mergeTarget(inspection)!
+  snapshots.set(9, { author: 100, head: sha("9") })
+  const { candidate } = await github.snapshot(inspection, 9)
+  if (!candidate) throw new Error("Missing fixture candidate")
+  let appId = 22
+  let merges = 0
+  network.use(
+    http.post(`${origin}/app/installations/20/access_tokens`, () =>
+      HttpResponse.json({
+        token: "merge-installation",
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      }),
+    ),
+    http.get(`${repo}/check-runs/123`, () =>
+      HttpResponse.json({
+        id: 123,
+        app: { id: appId },
+        name: "vug/merge-policy",
+        external_id: "99:9",
+        head_sha: sha("9"),
+        status: "completed",
+        conclusion: "success",
+      }),
+    ),
+    http.get(`${repo}/compare/:range`, () => HttpResponse.json({ status: "ahead" })),
+    http.put(`${repo}/pulls/9/merge`, async ({ request }) => {
+      expect(request.headers.get("authorization")).toBe("Bearer merge-installation")
+      expect(await request.json()).toEqual({ sha: sha("9"), merge_method: "squash" })
+      merges++
+      return HttpResponse.json({ merged: true, sha: sha("c") })
+    }),
+    http.get(`${repo}/git/commits/${sha("c")}`, () =>
+      HttpResponse.json({ tree: { sha: sha("b") }, parents: [{ sha: sha("a") }] }),
+    ),
+  )
+
+  expect(await github.squash(inspection, merger, candidate, 123)).toBe(false)
+  appId = 11
+  expect(await github.squash(inspection, merger, { ...candidate, base_sha: sha("d") }, 123)).toBe(
+    false,
+  )
+  expect(await github.squash(inspection, merger, { ...candidate, tree_oid: sha("d") }, 123)).toBe(
+    false,
+  )
+  snapshots.set(9, { author: 100, head: sha("8") })
+  expect(await github.squash(inspection, merger, candidate, 123)).toBe(false)
+  expect(merges).toBe(0)
+  snapshots.set(9, { author: 100, head: sha("9") })
+  expect(await github.squash(inspection, merger, candidate, 123)).toBe(true)
+  expect(merges).toBe(1)
+})

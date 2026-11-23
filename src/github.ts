@@ -1,7 +1,7 @@
 import { createPrivateKey } from "node:crypto"
 import { importPKCS8, SignJWT } from "jose"
 import * as z from "zod"
-import { digest, id, oid, repoName } from "./protocol.ts"
+import { digest, id, oid, repoName, sameCandidate } from "./protocol.ts"
 import type { Candidate, Env, Target } from "./protocol.ts"
 
 export const workflow = "merge-policy.yml"
@@ -60,18 +60,21 @@ export class GitHub {
     return response.status === 204 || response.status === 202 ? undefined : response.json()
   }
 
-  private async installation(target: Target) {
-    const key = `${target.installation_id}:${target.repo_id}`
+  private async installation(target: Target, merge = false) {
+    const app = merge ? this.env.MERGE_APP_ID : this.env.GITHUB_APP_ID
+    const privateKey = merge ? this.env.MERGE_APP_PRIVATE_KEY : this.env.GITHUB_APP_PRIVATE_KEY
+    if (!app || !privateKey) throw new Error("Missing GitHub App credentials")
+    const key = `${app}:${target.installation_id}:${target.repo_id}`
     const cached = this.installations.get(key)
     if (cached && cached.expires > Date.now() + 60_000) return cached.token
-    const pem = createPrivateKey(this.env.GITHUB_APP_PRIVATE_KEY).export({
+    const pem = createPrivateKey(privateKey).export({
       type: "pkcs8",
       format: "pem",
     })
     const signingKey = await importPKCS8(pem, "RS256")
     const jwt = await new SignJWT({})
       .setProtectedHeader({ alg: "RS256" })
-      .setIssuer(this.env.GITHUB_APP_ID)
+      .setIssuer(app)
       .setIssuedAt(Math.floor(Date.now() / 1000) - 30)
       .setExpirationTime("8m")
       .sign(signingKey)
@@ -82,7 +85,9 @@ export class GitHub {
         "POST",
         {
           repository_ids: [target.repo_id],
-          permissions: { contents: "read", pull_requests: "read", checks: "write" },
+          permissions: merge
+            ? { contents: "write", pull_requests: "read", checks: "read" }
+            : { contents: "read", pull_requests: "read", checks: "write" },
         },
       ),
     )
@@ -130,6 +135,124 @@ export class GitHub {
       policy_digest,
     }
     return { author: pull.user.id, head: head_sha, candidate }
+  }
+
+  mergeTarget(target: Target) {
+    if (!this.env.MERGE_INSTALLATION) return null
+    const config = z
+      .object({ repo_id: id, installation_id: id })
+      .strict()
+      .parse(JSON.parse(this.env.MERGE_INSTALLATION))
+    if (config.repo_id !== target.repo_id) return null
+    if (this.env.MERGE_APP_ID === this.env.GITHUB_APP_ID) {
+      throw new Error("The inspection and merge Apps must have different identities")
+    }
+    return { ...target, installation_id: config.installation_id }
+  }
+
+  async approved(target: Target, candidate: Candidate, author: number) {
+    const token = await this.installation(target, true)
+    const root = `/repos/${target.repo}`
+    const reviewSchema = z.array(
+      z.object({
+        id,
+        state: z.string(),
+        commit_id: oid.nullable(),
+        user: z.object({ id, login: z.string() }).nullable(),
+      }),
+    )
+    const latest = new Map<number, z.infer<typeof reviewSchema>[number]>()
+    for (let page = 1; page <= 5; page++) {
+      const reviews = reviewSchema.parse(
+        await this.request(
+          `${root}/pulls/${candidate.pr}/reviews?per_page=100&page=${page}`,
+          token,
+        ),
+      )
+      for (const review of reviews) {
+        if (
+          review.user &&
+          review.user.id !== author &&
+          ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)
+        ) {
+          latest.set(review.user.id, review)
+        }
+      }
+      if (reviews.length === 100) continue
+      for (const review of latest.values()) {
+        if (review.state !== "APPROVED" || review.commit_id !== candidate.head_sha || !review.user)
+          continue
+        const result = z
+          .object({ permission: z.string(), user: z.object({ id }) })
+          .parse(
+            await this.request(
+              `${root}/collaborators/${encodeURIComponent(review.user.login)}/permission`,
+              token,
+            ),
+          )
+        if (result.permission === "admin" && result.user.id === review.user.id) return true
+      }
+      return false
+    }
+    return false
+  }
+
+  async squash(inspection: Target, target: Target, candidate: Candidate, checkId: number) {
+    const root = `/repos/${target.repo}`
+    const token = await this.installation(target, true)
+    const run = z
+      .object({
+        id,
+        app: z.object({ id }).nullable(),
+        name: z.string(),
+        external_id: z.string().nullable(),
+        head_sha: oid,
+        status: z.string(),
+        conclusion: z.string().nullable(),
+      })
+      .parse(await this.request(`${root}/check-runs/${checkId}`, token))
+    if (
+      run.id !== checkId ||
+      run.app?.id !== Number(this.env.GITHUB_APP_ID) ||
+      run.name !== check ||
+      run.external_id !== `${target.repo_id}:${candidate.pr}` ||
+      run.head_sha !== candidate.head_sha ||
+      run.status !== "completed" ||
+      run.conclusion !== "success"
+    )
+      return false
+
+    const comparison = z
+      .object({ status: z.string() })
+      .parse(
+        await this.request(
+          `${root}/compare/${candidate.base_sha}...${candidate.head_sha}?per_page=1`,
+          token,
+        ),
+      )
+    if (comparison.status !== "ahead") return false
+    const latest = await this.snapshot(inspection, candidate.pr)
+    if (!latest.candidate || !sameCandidate(candidate, latest.candidate)) return false
+    const result = z.object({ merged: z.literal(true), sha: oid }).parse(
+      await this.request(`${root}/pulls/${candidate.pr}/merge`, token, "PUT", {
+        sha: candidate.head_sha,
+        merge_method: "squash",
+      }),
+    )
+    const commit = z
+      .object({
+        tree: z.object({ sha: oid }),
+        parents: z.array(z.object({ sha: oid })),
+      })
+      .parse(await this.request(`${root}/git/commits/${result.sha}`, token))
+    if (
+      commit.tree.sha !== candidate.tree_oid ||
+      commit.parents.length !== 1 ||
+      commit.parents[0]?.sha !== candidate.base_sha
+    ) {
+      console.error("Merged commit differs from the inspected candidate", result.sha)
+    }
+    return true
   }
 
   async managedRun(path: string, method = "GET", input?: unknown) {

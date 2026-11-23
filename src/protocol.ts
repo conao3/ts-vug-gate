@@ -40,6 +40,9 @@ export type Env = {
   GITHUB_APP_PRIVATE_KEY: string
   GITHUB_WEBHOOK_SECRET: string
   GITHUB_ACTIONS_TOKEN: string
+  MERGE_APP_ID?: string
+  MERGE_APP_PRIVATE_KEY?: string
+  MERGE_INSTALLATION?: string
   MANAGEMENT_REPO: string
   MANAGEMENT_REF: string
   MANAGEMENT_SHA: string
