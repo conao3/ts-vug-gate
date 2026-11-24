@@ -11,7 +11,7 @@ permissions:
   contents: read
 env:
   CANDIDATE: ${{ inputs.candidate }}
-  VUG: github:conao3/rust-vug/93ed787e82ff24369f1d8352889ef8fedbb90b29
+  VUG: github:conao3/rust-vug/ff15c9e3fda81d01846688bad19c495a5c237d56
 jobs:
   inspect:
     runs-on: ubuntu-26.04
@@ -31,6 +31,13 @@ jobs:
         with:
           name: inspection
           path: ${{ runner.temp }}/inspection.json
+      - uses: actions/upload-artifact@v7.0.2
+        if: steps.inspect.outputs.targets != '[]'
+        with:
+          name: verified-inputs
+          path: ${{ runner.temp }}/verified-inputs
+          if-no-files-found: error
+          compression-level: 0
   primary:
     needs: inspect
     if: needs.inspect.outputs.targets != '[]'
@@ -46,10 +53,14 @@ jobs:
       - run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           nix build "$VUG" -o "$RUNNER_TEMP/vug"
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: verified-inputs
+          path: ${{ runner.temp }}/verified-inputs
       - id: build
         env:
           PACKAGES: ${{ needs.inspect.outputs.targets }}
-        run: python3 scripts/inspect.py build
+        run: unshare --user --map-root-user --net -- python3 scripts/inspect.py build
   repeat:
     needs: inspect
     if: needs.inspect.outputs.targets != '[]'
@@ -65,10 +76,14 @@ jobs:
       - run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           nix build "$VUG" -o "$RUNNER_TEMP/vug"
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: verified-inputs
+          path: ${{ runner.temp }}/verified-inputs
       - id: build
         env:
           PACKAGES: ${{ needs.inspect.outputs.changed }}
-        run: python3 scripts/inspect.py build
+        run: unshare --user --map-root-user --net -- python3 scripts/inspect.py build
   decide:
     name: Decide merge policy
     needs: [inspect, primary, repeat]

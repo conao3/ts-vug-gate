@@ -3,15 +3,19 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 TEMP = Path(os.environ["RUNNER_TEMP"])
 OBJECTS = TEMP / "objects.git"
 POLICY = Path("policy/provenance.json")
 VUG = TEMP / "vug/bin/vug"
+VERIFIED = TEMP / "verified-inputs"
+SOURCES = VERIFIED / "sources"
 PIN = "221f987cea759e0bab03d8f4bc37825d38656183"
 SEED = "3a67c035370f4bc2a65c394165f53b6ca6e604947bce32f6b26d7c9723c584c9"
 SCRIPT = "fe8edd578fa0e5a5e2b89cab43f5dc7f121317fd601124bf823fd4192cdb549c"
@@ -94,14 +98,19 @@ def prepare(request):
     return identity, changes
 
 
-def tools():
-    path = TEMP / "package-builds.py"
-    with urlopen(f"https://raw.githubusercontent.com/conao3/vug-packages/{PIN}/.github/scripts/package-builds.py",
-                 timeout=30) as response:
-        data = response.read(64 * 1024)
+def tools(download=False):
+    path = VERIFIED / "package-builds.py"
+    if download:
+        with urlopen(f"https://raw.githubusercontent.com/conao3/vug-packages/{PIN}/.github/scripts/package-builds.py",
+                     timeout=30) as response:
+            data = response.read(64 * 1024)
+    else:
+        data = path.read_bytes()
     if hashlib.sha256(data).hexdigest() != SCRIPT:
         raise ValueError("Build script checksum mismatch")
-    path.write_bytes(data)
+    if download:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
     import runpy
     return runpy.run_path(str(path))
 
@@ -126,6 +135,116 @@ def emit(**values):
             output.write(f"{key}={json.dumps(value, separators=(',', ':'))}\n")
 
 
+def package_dir(root, name):
+    if not PACKAGE.fullmatch(name):
+        raise ValueError("Invalid package name")
+    return root / "packages" / (name[:2] if len(name) > 1 else name + "_") / name
+
+
+def seed_bytes(root):
+    data = (root / "seed.toml").read_bytes()
+    if hashlib.sha256(data).hexdigest() != SEED:
+        raise ValueError("Candidate seed does not match policy")
+    return data
+
+
+def trusted_source(url, digest):
+    if not re.fullmatch(r"[0-9a-f]{64}", digest) or urlsplit(url).scheme != "https":
+        raise ValueError("Expected an HTTPS source with a SHA-256 digest")
+    destination = SOURCES / digest
+    if destination.is_file():
+        return
+    with urlopen(url, timeout=30) as response, destination.open("xb") as output:
+        checksum = hashlib.sha256()
+        while chunk := response.read(1024 * 1024):
+            output.write(chunk)
+            checksum.update(chunk)
+    if checksum.hexdigest() != digest:
+        raise ValueError("Trusted source checksum mismatch")
+
+
+def source_plan(identity, targets, changed, current_record):
+    SOURCES.mkdir(parents=True, exist_ok=True)
+    manifest = []
+
+    def record_input(kind, name, version, digest, commit, path):
+        if not (SOURCES / digest).is_file():
+            raise ValueError(f"Missing verified bytes for {name} {version}: {path}")
+        manifest.append(dict(kind=kind, name=name, version=version, sha256=digest,
+                             commit=commit, path=path))
+
+    candidate_root = TEMP / "candidate"
+    for name, source in sorted(tomllib.loads(seed_bytes(candidate_root).decode()).items()):
+        digest = source["sha256"]
+        trusted_source(source["url"], digest)
+        record_input("seed", name, None, digest, identity["base_sha"], "seed.toml")
+
+    pending = list(reversed(targets))
+    visited = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        candidate = package_dir(candidate_root, name)
+        version, entry = current_record(candidate)
+        version_path = f"versions/{version}.toml"
+        if name in changed:
+            kind, commit = "candidate", identity["head_sha"]
+            directory = candidate
+        else:
+            kind, commit = "base", identity["base_sha"]
+            directory = package_dir(TEMP / "base", name)
+            original = (directory / version_path).read_bytes()
+            if original != (candidate / version_path).read_bytes():
+                raise ValueError(f"Candidate differs from the trusted base record for {name}")
+            entry = tomllib.loads(original.decode())
+            trusted_source(entry["source"]["url"], entry["source"]["sha256"])
+        digest = entry["source"]["sha256"]
+        record_input(kind, name, version, digest, commit, version_path)
+        for patch in entry.get("patches", []):
+            path = f"patches/{patch}"
+            payload = (directory / path).read_bytes()
+            digest = hashlib.sha256(payload).hexdigest()
+            if kind == "base":
+                if payload != (candidate / path).read_bytes():
+                    raise ValueError(f"Candidate differs from the trusted base patch for {name}")
+                (SOURCES / digest).write_bytes(payload)
+            record_input(kind, name, version, digest, commit, path)
+
+        dependencies = entry.get("dependencies", {})
+        selectors = [
+            *dependencies.get("build", []),
+            *dependencies.get("run", []),
+            *dependencies.get("expose", []),
+        ]
+        for output in entry.get("outputs", {}).values():
+            selectors.extend(output.get("run", []))
+        for selector in selectors:
+            dependency = selector.partition(":")[0]
+            if dependency:
+                pending.append(dependency)
+
+    for name in targets:
+        candidate = package_dir(candidate_root, name)
+        version, _ = current_record(candidate)
+        historical = package_dir(TEMP / "base", name) / "versions"
+        for file in (candidate / "versions").glob("*.toml"):
+            original = historical / file.name
+            if file.stem != version and (
+                not original.is_file() or file.read_bytes() != original.read_bytes()
+            ):
+                raise ValueError("A changed version is outside the selected build plan")
+
+    shutil.move(candidate_root, VERIFIED / "candidate")
+    (VERIFIED / "manifest.json").write_text(
+        json.dumps(dict(identity=identity, targets=targets, inputs=manifest))
+    )
+    blobs = list(SOURCES.iterdir())
+    size = sum(path.stat().st_size for path in blobs)
+    print(f"Verified source payload: {len(blobs)} blobs, {size} bytes")
+
+
 def inspect(request):
     identity, changes = prepare(request)
     data = dict(schema_version=1, identity=identity, core_packages=CORE,
@@ -144,13 +263,13 @@ def inspect(request):
     ] + [dict(check=1, target=target) for target in format_targets]
     data["results"] = [record(1, target, identity, result) for target in format_targets]
     provenance = vug("verify-provenance", "--root", OBJECTS, "--policy",
-                     f"file://{POLICY.resolve()}", request=dict(schema_version=1, identity=identity),
+                     f"file://{POLICY.resolve()}", "--source-cache-dir", SOURCES, request=dict(schema_version=1, identity=identity),
                      path=TEMP / "provenance-input.json")
     data["results"].extend(provenance["Results"])
     for row in data["results"]:
         print(f"Check {row['check']} · {row['target']} · {row['status']}")
     print(f"Check 2 · {scope['Scope']}")
-    tools_api = tools()
+    tools_api = tools(download=True)
     targets = []
     if scope["ChangeClass"] == "record_change" and scope["Scope"] == "passed" and all(
         row["status"] == "passed" for row in data["results"]
@@ -160,37 +279,36 @@ def inspect(request):
         dependent = reverse(TEMP / "base", names) | reverse(TEMP / "candidate", names)
         if names and len(names | dependent) <= 12:
             targets = sorted(names) + sorted(dependent)
+            source_plan(identity, targets, names, tools_api["current_record"])
     data["changes"] = changes
     (TEMP / "inspection.json").write_text(json.dumps(data))
     emit(changed=changed, targets=targets)
 
 
 def build(request, targets):
-    prepare(request)
-    root = TEMP / "candidate"
-    if hashlib.sha256((root / "seed.toml").read_bytes()).hexdigest() != SEED:
-        raise ValueError("Candidate seed does not match policy")
+    manifest = json.loads((VERIFIED / "manifest.json").read_text())
+    identity = manifest["identity"]
+    expected = {key: request[key] for key in IDENTITY if key in request}
+    expected["policy_digest"] = hashlib.sha256(POLICY.read_bytes()).hexdigest()
+    if any(identity[key] != value for key, value in expected.items()):
+        raise ValueError("Verified source artifact identity mismatch")
+    if not set(targets) <= set(manifest["targets"]):
+        raise ValueError("Build targets are outside the verified source plan")
+    root = VERIFIED / "candidate"
+    seed_bytes(root)
     api = tools()
     namespace = api["build"].__globals__
 
     def build_and_read(name, data, log):
-        if not PACKAGE.fullmatch(name):
-            raise ValueError("Invalid package name")
-        version, entry = api["current_record"](root / "packages" / (name[:2] if len(name) > 1 else name + "_") / name)
+        version, entry = api["current_record"](package_dir(root, name))
         tests = entry.get("check", {})
         if tests.get("enabled") is not True or tests.get("skip", []):
             raise ValueError("Required tests are disabled or skipped")
-        base_dir = TEMP / "base" / "packages" / (name[:2] if len(name) > 1 else name + "_") / name
-        directory = root / "packages" / (name[:2] if len(name) > 1 else name + "_") / name
-        for file in (directory / "versions").glob("*.toml"):
-            original = base_dir / "versions" / file.name
-            if file.stem != version and (not original.is_file() or file.read_bytes() != original.read_bytes()):
-                raise ValueError("A changed version is outside the selected build plan")
         with log.open("wb") as stderr:
             result = subprocess.run(
                 [VUG, "package", "build-package", "--root", root, "--name", name,
-                 "--package-version", version, "--jobs", "4", "--data-dir", data,
-                 "--cache-dir", data.parent / "sources"],
+                 "--package-version", version, "--jobs", "3", "--data-dir", data,
+                 "--source-cache-dir", SOURCES],
                 stdout=subprocess.DEVNULL, stderr=stderr,
             )
         if result.returncode:
