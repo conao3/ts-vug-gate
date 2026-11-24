@@ -35,6 +35,7 @@ const entrySchema = z.object({
   checkId: id.optional(),
   superseded: z.object({ head: oid, checkId: id }).optional(),
   outcome: decisionSchema.optional(),
+  managementShaMismatch: z.boolean().optional(),
   mergePending: z.boolean().optional(),
   approvalPoll: z.number().optional(),
 })
@@ -69,7 +70,9 @@ function checkNotice(entry: Entry, approved = false) {
         success: entry.outcome === "auto_merge" || approved,
         summary: {
           auto_merge: "All required checks passed.",
-          incomplete: "One or more required checks did not complete.",
+          incomplete: entry.managementShaMismatch
+            ? "The management workflow commit differs from MANAGEMENT_SHA. Redeploy the Worker for the current management branch."
+            : "One or more required checks did not complete.",
           reject: "The candidate failed the merge policy.",
           requires_approval: approved
             ? "A repository administrator approved the inspected candidate."
@@ -365,10 +368,14 @@ export class MergeQueue extends DurableObject<Env> {
       !active.cancelled &&
       info.conclusion === "success" &&
       info.head_sha === this.env.MANAGEMENT_SHA
-    this.finish(current, verified ? active.result : undefined)
+    this.finish(
+      current,
+      verified ? active.result : undefined,
+      info.head_sha !== this.env.MANAGEMENT_SHA,
+    )
   }
 
-  private finish(entry: Entry, outcome?: Decision) {
+  private finish(entry: Entry, outcome?: Decision, managementShaMismatch?: boolean) {
     const changed =
       entry.candidate && entry.active && !sameCandidate(entry.candidate, entry.active.job)
     if (entry.candidate && changed) {
@@ -385,6 +392,7 @@ export class MergeQueue extends DurableObject<Env> {
       phase: entry.candidate ? "done" : "inactive",
       active: undefined,
       outcome,
+      managementShaMismatch,
       dirty: entry.dirty || entry.candidate !== null,
     })
   }
