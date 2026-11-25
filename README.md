@@ -29,7 +29,7 @@ The workflow fetches Git objects into a bare repository. The inspection script r
 
 The inspection job runs `vug record check-tree`, `vug record verify-provenance`, and the scope decision. On an eligible candidate, separate GitHub-hosted jobs build and test changed packages and their reverse dependencies, and rebuild the changed packages in an independent store. The jobs require enabled tests with an empty skip list and read output IDs from the vug store index. The decision job calls `vug record decide-merge` with the inspection and build results. Only the callback job can request OIDC.
 
-The provenance file contains the initial allowlist for the which and unibilium smoke runs. Expand it with reviewed source and patch origins before enabling additional packages. A plan over 12 packages or a changed historical version yields an incomplete check. The inspection job writes provenance-checked candidate sources and patches to the `verified-inputs` artifact, along with the fixed seed and the transitive build inputs verified against the base commit. Its manifest records the candidate identity and each input's package, version, SHA-256 and supplying commit. The primary and repeat jobs download the same artifact and run the build step in a network namespace. vug reads the SHA-256-named inputs from the artifact and rejects missing or corrupt files before building.
+The provenance file contains the initial allowlist for the which and unibilium smoke runs. Expand it with reviewed source and patch origins before enabling additional packages. A plan over 12 packages or a changed historical version yields an incomplete check. The inspection job writes provenance-checked candidate sources and patches to the `verified-inputs` artifact, along with the fixed seed and the transitive build inputs verified against the base commit. Its manifest records the candidate identity and each input's package, version, SHA-256 and supplying commit. The primary and repeat jobs download the same artifact and pass it to vug with `--source-cache-dir`. vug verifies the inputs and isolates each build and test command in a network namespace. The build driver can read the fixed HTTPS binary cache with the management repository variable `VUG_CACHE_PUBLIC_KEY`. Both jobs force source builds for the changed packages and reverse dependencies in the plan. Other dependencies can use signed cache entries or build from the verified sources on a cache miss.
 
 To run a smoke check, substitute an already-merged package commit and its parent. This mode produces the decision in the run logs and skips the callback.
 
@@ -54,7 +54,9 @@ gh workflow run merge-policy.yml -f candidate='{"repo":"<OWNER>/<REPO>","base_sh
 | `RUNNING_PER_AUTHOR`, `WAITING_PER_AUTHOR`, `RUNNING_TOTAL` | The queue limits in `wrangler.jsonc`                                                |
 
 4. The local secret JSON holds `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, and `GITHUB_ACTIONS_TOKEN`. Deploy with `pnpm exec wrangler deploy --config <LOCAL_CONFIG> --secrets-file <LOCAL_SECRET_JSON>`. Recompute the workflow SHA and policy digest when promoting a new managed workflow revision.
-5. Confirm GitHub's ping delivery, then use the sandbox acceptance procedure before configuring a production target.
+5. Set the management repository variable `VUG_CACHE_PUBLIC_KEY` to the public key of the signed binary cache. Confirm GitHub's ping delivery and run the sandbox acceptance procedure before configuring a production target.
+
+`TARGETS` controls where the inspection App handles PRs. The optional `MERGE_INSTALLATION` binding authorizes one repository and branch for automatic merging. For observation, register the repository in `TARGETS` and leave it outside `MERGE_INSTALLATION`.
 
 ## Sandbox acceptance
 

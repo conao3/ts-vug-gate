@@ -14,6 +14,7 @@ TEMP = Path(os.environ["RUNNER_TEMP"])
 OBJECTS = TEMP / "objects.git"
 POLICY = Path("policy/provenance.json")
 VUG = TEMP / "vug/bin/vug"
+CACHE_URL = "https://pub-da78c0bd9fc84d998fefca158806f160.r2.dev"
 VERIFIED = TEMP / "verified-inputs"
 SOURCES = VERIFIED / "sources"
 PIN = "221f987cea759e0bab03d8f4bc37825d38656183"
@@ -285,15 +286,23 @@ def inspect(request):
     emit(changed=changed, targets=targets)
 
 
-def build(request, targets):
+def build(request, targets, from_source):
     manifest = json.loads((VERIFIED / "manifest.json").read_text())
     identity = manifest["identity"]
     expected = {key: request[key] for key in IDENTITY if key in request}
     expected["policy_digest"] = hashlib.sha256(POLICY.read_bytes()).hexdigest()
     if any(identity[key] != value for key, value in expected.items()):
         raise ValueError("Verified source artifact identity mismatch")
-    if not set(targets) <= set(manifest["targets"]):
+    if not set(targets) <= set(from_source) == set(manifest["targets"]):
         raise ValueError("Build targets are outside the verified source plan")
+    public_key = os.environ["VUG_CACHE_PUBLIC_KEY"]
+    if not re.fullmatch(r"[0-9a-f]{64}", public_key):
+        raise ValueError("Expected a trusted binary cache public key")
+    cache_options = ["--binary-cache", CACHE_URL, "--trusted-key", public_key]
+    for package in from_source:
+        if not PACKAGE.fullmatch(package):
+            raise ValueError("Invalid source build package name")
+        cache_options.extend(["--build-from-source", package])
     root = VERIFIED / "candidate"
     seed_bytes(root)
     api = tools()
@@ -308,11 +317,14 @@ def build(request, targets):
             result = subprocess.run(
                 [VUG, "package", "build-package", "--root", root, "--name", name,
                  "--package-version", version, "--jobs", "3", "--data-dir", data,
-                 "--source-cache-dir", SOURCES],
+                 "--source-cache-dir", SOURCES, *cache_options],
                 stdout=subprocess.DEVNULL, stderr=stderr,
             )
         if result.returncode:
             raise ValueError(f"Package build exited with status {result.returncode}")
+        with log.open("rb") as output:
+            hits = sum(line.startswith(b"substituting /vug/store/") for line in output)
+        print(f"{name}: {hits} signed cache substitutions", flush=True)
         manifest = data / "index-outputs" / name / version
         if manifest.is_file():
             return {key: row["id"] for key, row in json.loads(manifest.read_text())["outputs"].items()}
@@ -354,7 +366,8 @@ if __name__ == "__main__":
         case "inspect":
             inspect(candidate)
         case "build":
-            build(candidate, json.loads(os.environ["PACKAGES"]))
+            build(candidate, json.loads(os.environ["PACKAGES"]),
+                  json.loads(os.environ["BUILD_FROM_SOURCE"]))
         case "report":
             report()
         case _:

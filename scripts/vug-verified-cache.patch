@@ -1,0 +1,18 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1130,6 +1130,9 @@
+-        if args.cache.binary_cache.is_some() || args.cache.trusted_key.is_some() {
+-            return Err(fail(
+-                "--source-cache-dir cannot be combined with a binary cache".into(),
+-            ));
+-        }
+-        (None, None)
++        match (&args.cache.binary_cache, &args.cache.trusted_key) {
++            (Some(url), Some(key)) if url.starts_with("https://") => {
++                (Some(url.clone()), Some(key.clone()))
++            }
++            (None, None) => (None, None),
++            _ => return Err(fail(
++                "--source-cache-dir requires an explicit HTTPS binary cache and trusted key when using a binary cache".into(),
++            )),
++        }
