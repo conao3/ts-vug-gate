@@ -268,8 +268,8 @@ def inspect(request):
                      path=TEMP / "provenance-input.json")
     data["results"].extend(provenance["Results"])
     for row in data["results"]:
-        print(f"Check {row['check']} · {row['target']} · {row['status']}")
-    print(f"Check 2 · {scope['Scope']}")
+        print(f"Check {row['check']} / {row['target']} / {row['status']}")
+    print(f"Check 2 / {scope['Scope']}")
     tools_api = tools(download=True)
     targets = []
     if scope["ChangeClass"] == "record_change" and scope["Scope"] == "passed" and all(
@@ -352,9 +352,9 @@ def report():
         }
         for check, status in statuses.items():
             data["results"].append(record(check, name, data["identity"], status))
-            print(f"Check {check} · {name} · {status}")
+            print(f"Check {check} / {name} / {status}")
     verdict = decide(data)
-    print(f"Decision · {verdict['Decision']}")
+    print(f"Decision / {verdict['Decision']}")
     emit(decision=verdict["Decision"])
     if not json.loads(os.environ["CANDIDATE"]).get("id") and verdict["Decision"] != "auto_merge":
         sys.exit(1)
