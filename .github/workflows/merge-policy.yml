@@ -11,7 +11,7 @@ permissions:
   contents: read
 env:
   CANDIDATE: ${{ inputs.candidate }}
-  VUG: github:conao3/rust-vug/c160879ad9e91436f12624ee6561f37e17de47fe
+  VUG: github:conao3/rust-vug/97793c0e4181399ae43c498faa460c71290dc188
   VUG_WITH_CACHE: >-
     (builtins.getFlake (builtins.getEnv "VUG")).packages.${builtins.currentSystem}.default.overrideAttrs
     (old: { patches = (old.patches or []) ++ [ ./scripts/vug-verified-cache.patch ]; })
